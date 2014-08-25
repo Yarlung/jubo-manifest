@@ -48,6 +48,8 @@ endef
 
 define Build/Compile
 	(cd $(PKG_BUILD_DIR); \
+	export CXX="$(TARGET_CXX)";\
+	export CC="$(TARGET_CC)";\
 	node-gyp build; \
 	);
 endef
