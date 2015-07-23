@@ -1,0 +1,2310 @@
+r2506
+strongswan上报认证数及认证成功数到MGR [UnitTest] 
+r2477
+IKE和ESP密钥等级日志调整为2  [UnitTest] 
+r2395
+修复IPSEC rekey异常 [UnitTest] 
+r2385
+给3A的AUIP 支持IPv6格式 [UnitTest] 
+r2355
+修正AAA服务器不通影响PSK方式接入问题 [UnitTest] 
+r2344
+IPv6下的NAT-T情况下，encap字段不写入内核 [UnitTest] 
+r2237
+给mgr发送SASP时，IPV4的IP长度为4字节；IPV6的IP长度为16字节 [UnitTest] 
+r2150
+修复基站两次认证造成establishing表异常问题 [UnitTest] 
+r2146
+添加-n参数，可以不运行configure脚本直接执行make命令 [UnitTest]
+r2108
+ike_sa_id_hash: SPI打印64位16进制数值 [UnitTest] 
+r2030
+修改IKE HASH函数－－提高通道建立速率 [UnitTest] 
+r1925
+修复累积通道导致的内存缓慢泄露问题 [UnitTest] 
+r1841
+修复：异常基站（DH：2048）接入导致strongswan线程被永久占用问题 [UnitTest] 
+r1812
+重复使用其他程序已使用UDP端口问题未解决，先还原版本 [UnitTest]
+r1772
+把strongswan4.6.4 Cavium编译方法里面的-g参数更改为-O2:减少strongswan包大小 [UnitTest] 
+r1770
+strongswan修改为不能重复使用其他程序已使用UDP端口 [UnitTest]
+r1769
+修复半开连接数异常问题 [UnitTest]
+r1488
+提升建立速率,strongswan的所有线程动态地运行在前n个核,不再绑定某线程只能在某个核上跑,因为实际测试发现有负荷不均衡的情况 [UnitTest]
+r1465
+.不向mgr通告FWD方向的SP 2.加入对delete消息处理流程的选项 [UnitTest]
+r1405
+增加core_num选项，配置charon的子线程运行在前几个核 [UnitTest]
+r1402
+去除多余的打印 [UnitTest]
+r1383
+提高建立速率到20TPS： 1. 每个线程使用自己的netlink socket与内核通信，提高并发性 2. dhcp等待响应的时间与dhcpd相适应，以1500ms 2000ms 2500ms等待响应 3. hash表初始化申请2W个AU大小的内存 4. 新增SP时不再插入drop的SP 5. 线程增均地分配到4个核上 6. 优化strongswan.conf配置,详见src/str...
+r1380
+同步TD，GSM，LTE strongswan4.6.4到IPBasec [UnitTest]
+r1271
+把netlink文件中static char buf[4096]；字段中的static去掉，原因是会造成死锁 [UnitTest]
+
+
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libstrongswan/threading/thread.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libstrongswan/threading/thread.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libstrongswan/threading/thread.c	(版本 2506)
+@@ -38,7 +38,10 @@
+ #include <threading/mutex.h>
+ #include <utils/linked_list.h>
+ 
++#include <errno.h>
++
+ #include "thread.h"
++#define DEFAULT_CORE_NUM 3
+ 
+ typedef struct private_thread_t private_thread_t;
+ 
+@@ -95,6 +98,11 @@
+ 	 */
+ 	bool terminated;
+ 
++    /**
++	 * the num of core, on which threads are running.
++	 */
++    u_int core_num;
++
+ };
+ 
+ typedef struct {
+@@ -258,6 +266,7 @@
+ 		},
+ 		.cleanup_handlers = linked_list_create(),
+ 		.mutex = mutex_create(MUTEX_TYPE_DEFAULT),
++		.core_num = DEFAULT_CORE_NUM,
+ 	);
+ 	sem_init(&this->created, FALSE, 0);
+ 
+@@ -287,6 +296,8 @@
+ static void *thread_main(private_thread_t *this)
+ {
+ 	void *res;
++    cpu_set_t mask;
++    int i = 0;
+ 
+ 	sem_wait(&this->created);
+ 	current_thread->set(current_thread, this);
+@@ -302,6 +313,29 @@
+ 		 this->id, (u_long)this->thread_id);
+ #endif
+ 
++    this->core_num = lib->settings->get_int(lib->settings, "charon.core_num", DEFAULT_CORE_NUM);
++    if(this->core_num < 1 || this->core_num > 4)
++    {
++        this->core_num = DEFAULT_CORE_NUM;
++    }
++    
++    CPU_ZERO(&mask);
++    //strongswan的所有线程动态地运行在前n个核
++    //不再绑定某线程只能在某个核上跑,因为实际测试发现有负荷不均衡的情况
++    //CPU_SET(this->id%this->core_num, &mask);
++    for(i = 0; i <  this->core_num; i++)
++    {
++        CPU_SET(i, &mask);
++    }
++    if(pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &mask) < 0)
++    {
++        DBG1(DBG_LIB, "set thread(%d) affinity failed %s", this->id, strerror(errno));
++    }
++    else
++    {
++        DBG1(DBG_LIB, "set thread(%d) affinity success, core_nume=%d", this->id, this->core_num);
++    }
++    
+ 	res = this->main(this->arg);
+ 	pthread_cleanup_pop(TRUE);
+ 
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/strongswan.conf
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/strongswan.conf	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/strongswan.conf	(版本 2506)
+@@ -1,34 +1,92 @@
+-# strongswan.conf - strongSwan configuration file
+-
+-charon {
+-
+-	# number of worker threads in charon
+-	threads = 16
+-
+-	# send strongswan vendor ID?
+-	# send_vendor_id = yes
+-
+-	plugins {
+-
+-		sql {
+-			# loglevel to log into sql database
+-			loglevel = -1
+-
+-			# URI to the database
+-			# database = sqlite:///path/to/file.db
+-			# database = mysql://user:password@localhost/database
+-		}
+-	}
+-
+-	# ...
+-}
+-
+-pluto {
+-
+-}
+-
+-libstrongswan {
+-
+-	#  set to no, the DH exponent size is optimized
+-	#  dh_exponent_ansi_x9_42 = no
+-}
++charon 
++{
++  load =  openssl random nonce x509 pubkey hmac xcbc stroke kernel-netlink eap-radius  socket-default dhcp ha
++  threads = 64
++  ikesa_table_size = 32768
++  ikesa_table_segments = 512
++  half_open_timeout = 20 
++  init_limit_half_open = 0
++  cookie_threshold = 10000 
++  auidseparator = .lte. 
++  ntf_sa_sp = no 
++  keep_alive = 0
++  threshold_rotate = 1048576000
++  retransmit_tries = 2
++  install_routes = no
++  routing_table = 0
++  inactivity_close_ike = yes
++  close_ike_on_child_failure = yes
++  plugins 
++  {
++    eap-radius 
++    {
++      secret = 123456
++      server = 10.7.0.80
++      sockets = 32
++    }
++ 
++     dhcp 
++    {
++      server = 10.2.29.255
++    }
++ }
++ 
++ processor 
++ {
++    priority_threads 
++    {
++      high = 1
++      medium = 16
++      low = 1
++      critical=16
++    }
++ }
++                                                       
++  filelog 
++  {
++        /home/ljr/ss4.6.4_bin_cavium_dh_speed_hard/charon.log 
++        {
++            # add a timestamp prefix
++            time_format = %b %e %T
++            # loggers to files also accept the append option to open files in
++            # append mode at startup (default is yes)
++            append = no
++            # the default loglevel for all daemon subsystems (defaults to 1).
++            default = -1
++            #knl = 1
++            #job = 1
++            # flush each line to disk
++            flush_line = yes
++            ike_name = yes
++        }
++        stderr 
++        {
++            # more detailed loglevel for a specific subsystem, overriding the
++            # default loglevel.
++            # also can be change when running by "ipsec stroke loglevel ike 2"
++            #dmn: Main daemon setup/cleanup/signal handling
++            #mgr: IKE_SA manager, handling synchronization for IKE_SA access
++            #ike: IKE_SA
++            #chd: CHILD_SA
++            #job: Jobs queueing/processing and thread pool management
++            #cfg: Configuration management and plugins
++            #knl: IPsec/Networking kernel interface
++            #net: IKE network communication
++            #enc: Packet encoding/decoding encryption/decryption operations
++            #tls: libtls library messages
++            #lib: libstrongwan library messages
++						
++            default = -1
++            ike = -1
++            knl = -1
++            enc = -1
++            net = -1
++            tls = -1
++            lib = -1
++            # prepend connection name, simplifies grepping
++            ike_name = yes
++        }
++    }
++    
++ 
++}
+\ 文件没有以空行结尾
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/plugins/kernel_klips/kernel_klips_ipsec.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/plugins/kernel_klips/kernel_klips_ipsec.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/plugins/kernel_klips/kernel_klips_ipsec.c	(版本 2506)
+@@ -1679,6 +1679,7 @@
+ 	struct sadb_sa *sa;
+ 	struct sadb_key *key;
+ 	size_t len;
++    chunk_t chunk_src, chunk_dst;
+ 
+ 	if (inbound)
+ 	{
+@@ -1769,8 +1770,10 @@
+ 	{
+ 		/*TODO*/
+ 	}
+-
+-	if (encap)
++    
++    chunk_src = src->get_address(src);
++    chunk_dst = dst->get_address(dst);
++	if (encap && (chunk_src.len == 4) && (chunk_dst.len == 4))
+ 	{
+ 		add_encap_ext(msg, src, dst, FALSE);
+ 	}
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/plugins/kernel_netlink/kernel_netlink_ipsec.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/plugins/kernel_netlink/kernel_netlink_ipsec.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/plugins/kernel_netlink/kernel_netlink_ipsec.c	(版本 2506)
+@@ -39,6 +39,8 @@
+ #include <debug.h>
+ #include <threading/thread.h>
+ #include <threading/mutex.h>
++#include <threading/condvar.h>
++#include <utils/linked_list.h>
+ #include <utils/hashtable.h>
+ #include <utils/linked_list.h>
+ #include <processing/jobs/callback_job.h>
+@@ -276,8 +278,15 @@
+ 	/**
+ 	 * Netlink xfrm socket (IPsec)
+ 	 */
+-	netlink_socket_t *socket_xfrm;
++	//netlink_socket_t *socket_xfrm;
+ 
++    /**
++	 * list of netlink sockets
++	 */
++	netlink_socket_t **sockets;
++
++    int socket_num;
++
+ 	/**
+ 	 * Netlink xfrm socket to receive acquire and expire events
+ 	 */
+@@ -304,6 +313,49 @@
+ 	u_int32_t replay_bmp;
+ };
+ 
++static bool create_multi_netlink_socket(private_kernel_netlink_ipsec_t *this, int sockets)
++{
++    bool result = TRUE;
++    netlink_socket_t *socket = NULL;
++    int i = 0;
++
++    this->sockets = calloc(sockets, sizeof(netlink_socket_t*));
++    while (sockets--)
++	{
++		socket = netlink_socket_create(NETLINK_XFRM);
++		if (!socket)
++		{
++            DBG1(DBG_KNL, "unable to create NETLINK_XFRM socket: %s", strerror(errno));
++			result = FALSE;
++            break;
++		}
++		this->sockets[i++] = socket;
++	}
++    return result;
++}
++
++
++static netlink_socket_t* get_netlink_socket(private_kernel_netlink_ipsec_t *this)
++{
++    
++	netlink_socket_t *skt = NULL;
++    u_int thread_id = 0;    
++	
++	//The IDs are assigned incrementally starting from 1
++    //The main thread's ID is 0
++	thread_id = thread_current_id();	
++    if(thread_id <= this->socket_num)
++    {        
++        skt = this->sockets[thread_id];
++        DBG2(DBG_KNL, "thread_id(%d) is right when getting netlink xfrm socket", thread_id);
++    }
++    else
++    {
++        DBG2(DBG_KNL, "thread_id(%d) is wrong when getting netlink xfrm socket", thread_id);
++    }
++	return skt;    
++}
++
+ typedef struct route_entry_t route_entry_t;
+ 
+ /**
+@@ -1021,6 +1073,8 @@
+ 	struct xfrm_userspi_info *userspi;
+ 	u_int32_t received_spi = 0;
+ 	size_t len;
++    status_t status = FAILED;
++    netlink_socket_t *socket_xfrm;
+ 
+ 	memset(&request, 0, sizeof(request));
+ 
+@@ -1039,7 +1093,10 @@
+ 	userspi->min = min;
+ 	userspi->max = max;
+ 
+-	if (this->socket_xfrm->send(this->socket_xfrm, hdr, &out, &len) == SUCCESS)
++    socket_xfrm = get_netlink_socket(this);
++    status = socket_xfrm->send(socket_xfrm, hdr, &out, &len);
++	if (status == SUCCESS)
++	//if (this->socket_xfrm->send(this->socket_xfrm, hdr, &out, &len) == SUCCESS)
+ 	{
+ 		hdr = out;
+ 		while (NLMSG_OK(hdr, len))
+@@ -1131,6 +1188,8 @@
+ 	struct xfrm_usersa_info *sa;
+ 	u_int16_t icv_size = 64;
+ 	status_t status = FAILED;
++    netlink_socket_t *socket_xfrm;
++    chunk_t chunk_src, chunk_dst;
+ 
+ 	/* if IPComp is used, we install an additional IPComp SA. if the cpi is 0
+ 	 * we are in the recursive call below */
+@@ -1377,7 +1436,9 @@
+ 		rthdr = XFRM_RTA_NEXT(rthdr);
+ 	}
+ 
+-	if (encap)
++    chunk_src = src->get_address(src);
++    chunk_dst = dst->get_address(dst);
++	if (encap && (chunk_src.len == 4) && (chunk_dst.len == 4))
+ 	{
+ 		struct xfrm_encap_tmpl *tmpl;
+ 
+@@ -1483,7 +1544,10 @@
+ 		}
+ 	}
+ 
+-	if (this->socket_xfrm->send_ack(this->socket_xfrm, hdr) != SUCCESS)
++    socket_xfrm = get_netlink_socket(this);
++    status = socket_xfrm->send_ack(socket_xfrm, hdr);
++	if (status != SUCCESS)
++	//if (this->socket_xfrm->send_ack(this->socket_xfrm, hdr) != SUCCESS)	
+ 	{
+ 		if (mark.value)
+ 		{
+@@ -1520,6 +1584,8 @@
+ 	size_t len;
+ 	struct rtattr *rta;
+ 	size_t rtasize;
++    status_t status = FAILED;
++    netlink_socket_t *socket_xfrm;
+ 
+ 	memset(&request, 0, sizeof(request));
+ 
+@@ -1539,7 +1605,10 @@
+ 	aevent_id->sa_id.proto = protocol;
+ 	aevent_id->sa_id.family = dst->get_family(dst);
+ 
+-	if (this->socket_xfrm->send(this->socket_xfrm, hdr, &out, &len) == SUCCESS)
++    socket_xfrm = get_netlink_socket(this);
++    status = socket_xfrm->send(socket_xfrm, hdr, &out, &len);
++	if (status == SUCCESS)
++	//if (socket_xfrm->send(socket_xfrm, hdr, &out, &len) == SUCCESS)
+ 	{
+ 		hdr = out;
+ 		while (NLMSG_OK(hdr, len))
+@@ -1605,6 +1674,7 @@
+ 	struct xfrm_usersa_info *sa = NULL;
+ 	status_t status = FAILED;
+ 	size_t len;
++    netlink_socket_t *socket_xfrm;
+ 
+ 	memset(&request, 0, sizeof(request));
+ 
+@@ -1646,7 +1716,10 @@
+ 		mrk->m = mark.mask;
+ 	}
+ 
+-	if (this->socket_xfrm->send(this->socket_xfrm, hdr, &out, &len) == SUCCESS)
++    socket_xfrm = get_netlink_socket(this);
++    status = socket_xfrm->send(socket_xfrm, hdr, &out, &len);
++	if (status == SUCCESS)
++	//if (socket_xfrm->send(socket_xfrm, hdr, &out, &len) == SUCCESS)
+ 	{
+ 		hdr = out;
+ 		while (NLMSG_OK(hdr, len))
+@@ -1708,6 +1781,8 @@
+ 	netlink_buf_t request;
+ 	struct nlmsghdr *hdr;
+ 	struct xfrm_usersa_id *sa_id;
++    status_t status = FAILED;
++    netlink_socket_t *socket_xfrm;
+ 
+ 	/* if IPComp was used, we first delete the additional IPComp SA */
+ 	if (cpi)
+@@ -1755,7 +1830,10 @@
+ 		mrk->m = mark.mask;
+ 	}
+ 
+-	if (this->socket_xfrm->send_ack(this->socket_xfrm, hdr) != SUCCESS)
++    socket_xfrm = get_netlink_socket(this);
++    status = socket_xfrm->send_ack(socket_xfrm, hdr);
++	if (status != SUCCESS)
++	//if (socket_xfrm->send_ack(socket_xfrm, hdr) != SUCCESS)
+ 	{
+ 		if (mark.value)
+ 		{
+@@ -1798,6 +1876,7 @@
+ 	struct xfrm_replay_state *replay = NULL;
+ 	struct xfrm_replay_state_esn *replay_esn = NULL;
+ 	status_t status = FAILED;
++    netlink_socket_t *socket_xfrm;
+ 
+ 	/* if IPComp is used, we first update the IPComp SA */
+ 	if (cpi)
+@@ -1822,7 +1901,10 @@
+ 	sa_id->proto = protocol;
+ 	sa_id->family = dst->get_family(dst);
+ 
+-	if (this->socket_xfrm->send(this->socket_xfrm, hdr, &out, &len) == SUCCESS)
++    socket_xfrm = get_netlink_socket(this);
++    status = socket_xfrm->send(socket_xfrm, hdr, &out, &len);
++	if (status == SUCCESS)
++	//if (socket_xfrm->send(socket_xfrm, hdr, &out, &len) == SUCCESS)
+ 	{
+ 		hdr = out;
+ 		while (NLMSG_OK(hdr, len))
+@@ -1964,7 +2046,10 @@
+ 					  "with SPI %.8x", ntohl(spi));
+ 	}
+ 
+-	if (this->socket_xfrm->send_ack(this->socket_xfrm, hdr) != SUCCESS)
++    socket_xfrm = get_netlink_socket(this);
++    status = socket_xfrm->send_ack(socket_xfrm, hdr);
++	if (status != SUCCESS)
++	//if (socket_xfrm->send_ack(socket_xfrm, hdr) != SUCCESS)
+ 	{
+ 		DBG1(DBG_KNL, "unable to update SAD entry with SPI %.8x", ntohl(spi));
+ 		goto failed;
+@@ -1987,6 +2072,8 @@
+ 	netlink_buf_t request;
+ 	struct nlmsghdr *hdr;
+ 	struct xfrm_usersa_flush *flush;
++    status_t status = FAILED;
++    netlink_socket_t *socket_xfrm;
+ 
+ 	memset(&request, 0, sizeof(request));
+ 
+@@ -2000,7 +2087,10 @@
+ 	flush = (struct xfrm_usersa_flush*)NLMSG_DATA(hdr);
+ 	flush->proto = IPSEC_PROTO_ANY;
+ 
+-	if (this->socket_xfrm->send_ack(this->socket_xfrm, hdr) != SUCCESS)
++    socket_xfrm = get_netlink_socket(this);
++    status = socket_xfrm->send_ack(socket_xfrm, hdr);
++    if (status != SUCCESS)
++	//if (socket_xfrm->send_ack(socket_xfrm, hdr) != SUCCESS)
+ 	{
+ 		DBG1(DBG_KNL, "unable to flush SAD entries");
+ 		return FAILED;
+@@ -2023,7 +2113,10 @@
+ 	struct xfrm_userpolicy_info *policy_info;
+ 	struct nlmsghdr *hdr;
+ 	int i;
+-
++    status_t status = FAILED;
++    netlink_socket_t *socket_xfrm;
++    
++    DBG2(DBG_KNL, "add_policy_internal: start");
+ 	/* clone the policy so we are able to check it out again later */
+ 	memcpy(&clone, policy, sizeof(policy_entry_t));
+ 
+@@ -2127,15 +2220,19 @@
+ 		mrk->v = ipsec->mark.value;
+ 		mrk->m = ipsec->mark.mask;
+ 	}
+-	this->mutex->unlock(this->mutex);
++	//this->mutex->unlock(this->mutex);
+ 
+-	if (this->socket_xfrm->send_ack(this->socket_xfrm, hdr) != SUCCESS)
++    socket_xfrm = get_netlink_socket(this);
++    status = socket_xfrm->send_ack(socket_xfrm, hdr);
++	if (status != SUCCESS)
++	//if (this->socket_xfrm->send_ack(this->socket_xfrm, hdr) != SUCCESS)
+ 	{
++        this->mutex->unlock(this->mutex);
+ 		return FAILED;
+ 	}
+ 
+-	/* find the policy again */
+-	this->mutex->lock(this->mutex);
++	/* find the policy again */    
++	//this->mutex->lock(this->mutex);
+ 	policy = this->policies->get(this->policies, &clone);
+ 	if (!policy ||
+ 		 policy->used_by->find_first(policy->used_by,
+@@ -2231,6 +2328,7 @@
+ 		}
+ 	}
+ 	this->mutex->unlock(this->mutex);
++    DBG2(DBG_KNL, "add_policy_internal: finish");
+ 	return SUCCESS;
+ }
+ 
+@@ -2347,6 +2445,8 @@
+ 	struct xfrm_userpolicy_id *policy_id;
+ 	struct xfrm_userpolicy_info *policy = NULL;
+ 	size_t len;
++    status_t status = FAILED;
++    netlink_socket_t *socket_xfrm;
+ 
+ 	memset(&request, 0, sizeof(request));
+ 
+@@ -2389,7 +2489,10 @@
+ 		mrk->m = mark.mask;
+ 	}
+ 
+-	if (this->socket_xfrm->send(this->socket_xfrm, hdr, &out, &len) == SUCCESS)
++    socket_xfrm = get_netlink_socket(this);
++    status = socket_xfrm->send(socket_xfrm, hdr, &out, &len);
++    if (status == SUCCESS)
++	//if (this->socket_xfrm->send(this->socket_xfrm, hdr, &out, &len) == SUCCESS)
+ 	{
+ 		hdr = out;
+ 		while (NLMSG_OK(hdr, len))
+@@ -2453,6 +2556,8 @@
+ 	struct xfrm_userpolicy_id *policy_id;
+ 	bool is_installed = TRUE;
+ 	u_int32_t priority;
++    status_t status = FAILED;
++    netlink_socket_t *socket_xfrm;
+ 
+ 	if (mark.value)
+ 	{
+@@ -2594,7 +2699,10 @@
+ 	policy_entry_destroy(this, current);
+ 	this->mutex->unlock(this->mutex);
+ 
+-	if (this->socket_xfrm->send_ack(this->socket_xfrm, hdr) != SUCCESS)
++    socket_xfrm = get_netlink_socket(this);
++    status = socket_xfrm->send_ack(socket_xfrm, hdr);
++    if (status != SUCCESS)
++	//if (this->socket_xfrm->send_ack(this->socket_xfrm, hdr) != SUCCESS)
+ 	{
+ 		if (mark.value)
+ 		{
+@@ -2617,6 +2725,8 @@
+ {
+ 	netlink_buf_t request;
+ 	struct nlmsghdr *hdr;
++    status_t status = FAILED;
++    netlink_socket_t *socket_xfrm;
+ 
+ 	memset(&request, 0, sizeof(request));
+ 
+@@ -2630,7 +2740,10 @@
+ 	/* by adding an rtattr of type  XFRMA_POLICY_TYPE we could restrict this
+ 	 * to main or sub policies (default is main) */
+ 
+-	if (this->socket_xfrm->send_ack(this->socket_xfrm, hdr) != SUCCESS)
++    socket_xfrm = get_netlink_socket(this);
++    status = socket_xfrm->send_ack(socket_xfrm, hdr);
++    if (status != SUCCESS)
++	//if (this->socket_xfrm->send_ack(this->socket_xfrm, hdr) != SUCCESS)
+ 	{
+ 		DBG1(DBG_KNL, "unable to flush SPD entries");
+ 		return FAILED;
+@@ -2685,6 +2798,7 @@
+ {
+ 	enumerator_t *enumerator;
+ 	policy_entry_t *policy;
++    u_int i = 0;
+ 
+ 	if (this->job)
+ 	{
+@@ -2694,7 +2808,14 @@
+ 	{
+ 		close(this->socket_xfrm_events);
+ 	}
+-	DESTROY_IF(this->socket_xfrm);
++    
++	//DESTROY_IF(this->socket_xfrm);
++	for (i = 0; i < this->socket_num; i++)
++	{
++		DESTROY_IF(this->sockets[i]);      
++	}
++    free(this->sockets);
++    
+ 	enumerator = this->policies->create_enumerator(this->policies);
+ 	while (enumerator->enumerate(enumerator, &policy, &policy))
+ 	{
+@@ -2735,15 +2856,17 @@
+ 			},
+ 		},
+ 		.policies = hashtable_create((hashtable_hash_t)policy_hash,
+-									 (hashtable_equals_t)policy_equals, 32),
++									 (hashtable_equals_t)policy_equals, MAX_TUNNEL_NUM*3*128*HASH_FACTOR),
+ 		.sas = hashtable_create((hashtable_hash_t)ipsec_sa_hash,
+-								(hashtable_equals_t)ipsec_sa_equals, 32),
++								(hashtable_equals_t)ipsec_sa_equals, MAX_TUNNEL_NUM*2*HASH_FACTOR),
+ 		.mutex = mutex_create(MUTEX_TYPE_DEFAULT),
+ 		.policy_history = TRUE,
+ 		.install_routes = lib->settings->get_bool(lib->settings,
+ 					"%s.install_routes", TRUE, hydra->daemon),
+ 		.replay_window = lib->settings->get_int(lib->settings,
+-					"%s.replay_window", DEFAULT_REPLAY_WINDOW, hydra->daemon),
++					"%s.replay_window", DEFAULT_REPLAY_WINDOW, hydra->daemon),	
++		.socket_num = lib->settings->get_int(lib->settings,
++					"%s.threads", 16, hydra->daemon),
+ 	);
+ 
+ 	this->replay_bmp = (this->replay_window + sizeof(u_int32_t) * 8 - 1) /
+@@ -2764,13 +2887,18 @@
+ 		close(fd);
+ 	}
+ 
+-	this->socket_xfrm = netlink_socket_create(NETLINK_XFRM);
+-	if (!this->socket_xfrm)
++	//this->socket_xfrm = netlink_socket_create(NETLINK_XFRM);
++	//if (!this->socket_xfrm)
++    DBG1(DBG_KNL, "call create_multi_netlink_socket");
++    //子线程+主线程
++    this->socket_num++;
++	if(!create_multi_netlink_socket(this, this->socket_num))
+ 	{
++        DBG1(DBG_KNL, "create_multi_netlink_socket return NULL");
+ 		destroy(this);
+ 		return NULL;
+ 	}
+-
++    DBG1(DBG_KNL, "create %d netlink socket", this->socket_num);
+ 	memset(&addr, 0, sizeof(addr));
+ 	addr.nl_family = AF_NETLINK;
+ 
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/plugins/kernel_netlink/kernel_netlink_shared.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/plugins/kernel_netlink/kernel_netlink_shared.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/plugins/kernel_netlink/kernel_netlink_shared.c	(版本 2506)
+@@ -80,8 +80,17 @@
+ 	addr.nl_pid = 0;
+ 	addr.nl_groups = 0;
+ 
+-	if (this->protocol == NETLINK_XFRM)
++    if (this->protocol == NETLINK_XFRM)
+ 	{
++        DBG1(DBG_KNL, "netlink sending %N msg to kernel", xfrm_msg_names, in->nlmsg_type);
++    }
++    else
++    {
++        DBG1(DBG_KNL, "netlink sending %d msg to kernel", in->nlmsg_type);
++    }
++
++    if (this->protocol == NETLINK_XFRM)
++	{
+ 		chunk_t in_chunk = { (u_char*)in, in->nlmsg_len };
+ 
+ 		DBG3(DBG_KNL, "sending %N: %B", xfrm_msg_names, in->nlmsg_type, &in_chunk);
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/plugins/kernel_pfkey/kernel_pfkey_ipsec.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/plugins/kernel_pfkey/kernel_pfkey_ipsec.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/plugins/kernel_pfkey/kernel_pfkey_ipsec.c	(版本 2506)
+@@ -988,7 +988,7 @@
+ static status_t pfkey_send_socket(private_kernel_pfkey_ipsec_t *this, int socket,
+ 					struct sadb_msg *in, struct sadb_msg **out, size_t *out_len)
+ {
+-	static unsigned char buf[PFKEY_BUFFER_SIZE];
++	unsigned char buf[PFKEY_BUFFER_SIZE];
+ 	struct sadb_msg *msg;
+ 	int in_len, len;
+ 
+@@ -1465,6 +1465,7 @@
+ 	struct sadb_lifetime *lft;
+ 	struct sadb_key *key;
+ 	size_t len;
++    chunk_t chunk_src, chunk_dst;
+ 
+ 	memset(&request, 0, sizeof(request));
+ 
+@@ -1575,7 +1576,9 @@
+ 	}
+ 
+ #ifdef HAVE_NATT
+-	if (encap)
++    chunk_src = src->get_address(src);
++    chunk_dst = dst->get_address(dst);
++	if (encap && (chunk_src.len == 4) && (chunk_dst.len == 4))
+ 	{
+ 		add_encap_ext(msg, src, dst);
+ 	}
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/mgr_adapter/mgr_message.h
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/mgr_adapter/mgr_message.h	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/mgr_adapter/mgr_message.h	(版本 2506)
+@@ -26,6 +26,17 @@
+ 	                                   SSI_ABNORMAL_TYPE type,
+ 	                                   host_t *host, 
+ 	                                   identification_t * id);
++	//hhzh begin
++	//add for kpi 
++     /**
++	 * Create a message for ipsec kpi.
++	 *
++	 * @param info			infomation of ipsec kpi
++	 * @return				true for no error
++	 */
++	bool (*create_msg_for_ipsec_kpi)(mgr_message_t *this,
++	                                   SSI_IPSECKPI_TYPE type); 
++	//hhzh end  
+ 
+     /**
+ 	 * Create a message for ipsec key.
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/mgr_adapter/mgr_adapter.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/mgr_adapter/mgr_adapter.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/mgr_adapter/mgr_adapter.c	(版本 2506)
+@@ -54,6 +54,22 @@
+     
+ }private_mgr_adapter_t;
+ 
++//hhzh begin
++//add for pki : 给MGR发信息
++METHOD(mgr_adapter_t, ntf_ipsec_kpi, void,
++    private_mgr_adapter_t *this, SSI_IPSECKPI_TYPE type)
++{
++    //应该多加一个参数 
++    if(!this->enable_ntf_to_mgr) return;
++    
++    //TODO:变成多线程发送，提高性能
++    this->mutex->lock(this->mutex);
++    this->message->create_msg_for_ipsec_kpi(this->message, type);
++    this->socket->send(this->socket, this->message);
++    this->mutex->unlock(this->mutex);
++}
++//hhzh end
++
+ METHOD(mgr_adapter_t, ntf_abnormal_AU, void,
+     private_mgr_adapter_t *this, SSI_ABNORMAL_TYPE type,
+ 	host_t *host, identification_t * id)
+@@ -83,6 +99,12 @@
+ 			mark, tfc, lifetime, enc_alg, enc_key, int_alg, int_key, mode,
+ 			ipcomp, cpi, encap, esn, inbound, src_ts, dst_ts);
+     this->socket->send(this->socket, this->message);
++    DBG2(DBG_IKE, "key: src:%H, dst:%H, spi:0x%08x", src, dst, spi);
++    DBG2(DBG_IKE, "enc_alg:%N", encryption_algorithm_names, enc_alg);
++    DBG2(DBG_IKE, "enc_alg key:%B", &enc_key);
++    DBG2(DBG_IKE, "int_alg:%N", integrity_algorithm_names, int_alg);
++    DBG2(DBG_IKE, "int_alg key:%B", &int_key);
++
+     this->mutex->unlock(this->mutex);
+ }
+ 
+@@ -106,6 +128,9 @@
+ 	mark_t mark, policy_priority_t priority)
+ {
+     if(!this->enable_ntf_to_mgr || !this->enable_ntf_sa_sp) return;
++
++    //不处理FWD方向的SP
++    if(POLICY_FWD == direction) return;
+     
+     //TODO:要不要变成多线程发送，提高性能
+     this->mutex->lock(this->mutex);
+@@ -121,6 +146,9 @@
+ 	mark_t mark, policy_priority_t priority)
+ {
+     if(!this->enable_ntf_to_mgr || !this->enable_ntf_sa_sp) return;
++
++    //不处理FWD方向的SP
++    if(POLICY_FWD == direction) return;
+     
+     //TODO:要不要变成多线程发送，提高性能
+     this->mutex->lock(this->mutex);
+@@ -174,6 +202,10 @@
+     INIT(this,
+         .public = {
+             .ntf_abnormal_AU = _ntf_abnormal_AU,
++			//hhzh begin
++			//add for pki
++            .ntf_ipsec_kpi = _ntf_ipsec_kpi,
++			//hhzh end
+             .ntf_add_sa = _ntf_add_sa,
+             .ntf_del_sa = _ntf_del_sa,
+             .ntf_add_sp = _ntf_add_sp,
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/mgr_adapter/mgr_message.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/mgr_adapter/mgr_message.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/mgr_adapter/mgr_message.c	(版本 2506)
+@@ -146,7 +146,7 @@
+         ip->IsIPv6 = false;
+         memcpy(&ip->u.ipv4.ip32, tmpChunk.ptr, tmpChunk.len);
+     }
+-    else if(6 == tmpChunk.len)
++    else if(16 == tmpChunk.len)
+     {
+         ip->IsIPv6 = true;
+         memcpy(ip->u.ipv6.ip, tmpChunk.ptr, tmpChunk.len);
+@@ -314,7 +314,7 @@
+         ip->IsIPv6 = false;
+         memcpy(&ip->u.ipv4.ip32, tmpChunk.ptr, tmpChunk.len);
+     }
+-    else if(6 == tmpChunk.len)
++    else if(16 == tmpChunk.len)
+     {
+         ip->IsIPv6 = true;
+         memcpy(ip->u.ipv6.ip, tmpChunk.ptr, tmpChunk.len);
+@@ -370,8 +370,31 @@
+     
+     return result;
+ }
++//hhzh begin
++//add for kpi : 组ipsec kpi 信息
++METHOD(mgr_message_t, create_msg_for_ipsec_kpi, bool,
++	private_mgr_message_t *this, SSI_IPSECKPI_TYPE type)
++{
++    bool result = true;    
++    SSI_IPSECKPI_TYPE typeTmp;
++    typeTmp = type;
+ 
++    result = create_mgr_msg(this, SSI_MSG_TYPE_STATIC, sizeof(typeTmp), &typeTmp);    
++    if(result)
++    {
++        DBG1(DBG_CFG, "creating ipsec kpi message success:)");
++    }
++    else
++    {
++        DBG1(DBG_CFG, "creating ipsec kpi message failed: )");    
++    }
+ 
++    return result;  
++    
++}
++//hhzh end
++
++
+ METHOD(mgr_message_t, create_msg_for_abnormal_AU, bool,
+ 	private_mgr_message_t *this, SSI_ABNORMAL_TYPE type,
+ 	host_t *host, identification_t * id)
+@@ -640,6 +663,10 @@
+ 	INIT(this,
+         .public = {		    
+ 			.create_msg_for_abnormal_AU = _create_msg_for_abnormal_AU,
++			//hhzh begin
++			//add for kpi 
++   			.create_msg_for_ipsec_kpi = _create_msg_for_ipsec_kpi,
++			//hhzh end
+             .create_msg_for_add_sa = _create_msg_for_add_sa,
+             .create_msg_for_del_sa = _create_msg_for_del_sa,
+             .create_msg_for_add_sp = _create_msg_for_add_sp,
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/mgr_adapter/mgr_adapter.h
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/mgr_adapter/mgr_adapter.h	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/mgr_adapter/mgr_adapter.h	(版本 2506)
+@@ -28,7 +28,19 @@
+ 	void (*ntf_abnormal_AU)(mgr_adapter_t *this,
+                 	        SSI_ABNORMAL_TYPE type,
+ 	                        host_t *host, identification_t * id);
++	//hhzh begin
++	//add for pki : 
++	/**
++	 * Notify ipsec kpi to mgr.
++	 *
++	 * @param info			infomation of ipsec kpi
++	 * @return				
++	 */
++	void (*ntf_ipsec_kpi)(mgr_adapter_t *this,
++                	        SSI_IPSECKPI_TYPE type);
++	//hhzh end
+ 
++
+     /**
+ 	 * Notify ipsec key to mgr.
+ 	 *
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/attributes/mem_pool.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/attributes/mem_pool.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/attributes/mem_pool.c	(版本 2506)
+@@ -20,6 +20,7 @@
+ #include <utils/hashtable.h>
+ #include <utils/linked_list.h>
+ #include <threading/mutex.h>
++#include <hydra.h>
+ 
+ #define POOL_LIMIT (sizeof(uintptr_t)*8)
+ 
+@@ -473,7 +474,7 @@
+ 		},
+ 		.name = strdup(name),
+ 		.leases = hashtable_create((hashtable_hash_t)id_hash,
+-								   (hashtable_equals_t)id_equals, 16),
++								   (hashtable_equals_t)id_equals, MAX_TUNNEL_NUM*HASH_FACTOR),
+ 		.mutex = mutex_create(MUTEX_TYPE_DEFAULT),
+ 	);
+ 
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/hydra.h
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/hydra.h	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libhydra/hydra.h	(版本 2506)
+@@ -41,6 +41,8 @@
+ 
+ //ljr begin
+ #include <mgr_adapter/mgr_adapter.h> 
++#define MAX_TUNNEL_NUM 20000    //最大通道数
++#define HASH_FACTOR 2           //hash因子，防止很多通道时hash表不够大而扩大hash表
+ //ljr end
+ 
+ /**
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/plugins/socket_default/socket_default_socket.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/plugins/socket_default/socket_default_socket.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/plugins/socket_default/socket_default_socket.c	(版本 2506)
+@@ -86,6 +86,17 @@
+ static const struct in6_addr in6addr_any = IN6ADDR_ANY_INIT;
+ #endif
+ 
++//by:hhzh
++//最多同时用6组端口建立IPSEC,从strongswan.conf文件中读入
++//文件中不存在相应端口时,采用6组默认端口,分别为
++//IKE端口:500, 18295, 38295, 49295, 50295, 60295
++//NAT_T端口:4500 18296, 38296, 49296, 50296, 60296
++#define   MAX_PORT_NUM    6
++#define   MIN_PORT_NUM    1
++int portArray[MAX_PORT_NUM] = {0,0,0,0,0,0};
++int portNatArray[MAX_PORT_NUM] = {0,0,0,0,0,0};
++int currentPortNum = MIN_PORT_NUM;   
++
+ typedef struct private_socket_default_socket_t private_socket_default_socket_t;
+ 
+ /**
+@@ -101,12 +112,12 @@
+ 	/**
+ 	 * IPv4 socket (500)
+ 	 */
+-	int ipv4;
++	int ipv4[MAX_PORT_NUM];
+ 
+ 	/**
+ 	 * IPv4 socket for NATT (4500)
+ 	 */
+-	int ipv4_natt;
++	int ipv4_natt[MAX_PORT_NUM];
+ 
+ 	/**
+ 	 * IPv6 socket (500)
+@@ -137,17 +148,21 @@
+ 	fd_set rfds;
+ 	int max_fd = 0, selected = 0;
+ 	u_int16_t port = 0;
++    int i = 0;
+ 
+ 	FD_ZERO(&rfds);
+ 
+-	if (this->ipv4)
+-	{
+-		FD_SET(this->ipv4, &rfds);
+-	}
+-	if (this->ipv4_natt)
+-	{
+-		FD_SET(this->ipv4_natt, &rfds);
+-	}
++    for (i=0; i<currentPortNum; i++)
++    {
++    	if (this->ipv4[i])
++    	{
++    		FD_SET(this->ipv4[i], &rfds);
++    	}
++    	if (this->ipv4_natt[i])
++    	{
++    		FD_SET(this->ipv4_natt[i], &rfds);
++    	}
++    }
+ 	if (this->ipv6)
+ 	{
+ 		FD_SET(this->ipv6, &rfds);
+@@ -156,7 +171,10 @@
+ 	{
+ 		FD_SET(this->ipv6_natt, &rfds);
+ 	}
+-	max_fd = max(max(this->ipv4, this->ipv4_natt), max(this->ipv6, this->ipv6_natt));
++    for (i=0; i<currentPortNum; i++)
++    {
++    	max_fd = max(max(this->ipv4[i], this->ipv4_natt[i]), max(this->ipv6, this->ipv6_natt));
++    }
+ 
+ 	DBG2(DBG_NET, "waiting for data on sockets");
+ 	oldstate = thread_cancelability(TRUE);
+@@ -167,16 +185,21 @@
+ 	}
+ 	thread_cancelability(oldstate);
+ 
+-	if (FD_ISSET(this->ipv4, &rfds))
+-	{
+-		port = IKEV2_UDP_PORT;
+-		selected = this->ipv4;
+-	}
+-	if (FD_ISSET(this->ipv4_natt, &rfds))
+-	{
+-		port = IKEV2_NATT_PORT;
+-		selected = this->ipv4_natt;
+-	}
++
++    for (i=0; i<currentPortNum; i++)
++    {
++    	if (FD_ISSET(this->ipv4[i], &rfds))
++    	{
++    		port = portArray[i];
++    		selected = this->ipv4[i];
++    	}
++    	if (FD_ISSET(this->ipv4_natt[i], &rfds))
++    	{
++    		port = portNatArray[i];
++    		selected = this->ipv4_natt[i];
++    	}
++    }
++      
+ 	if (FD_ISSET(this->ipv6, &rfds))
+ 	{
+ 		port = IKEV2_UDP_PORT;
+@@ -297,10 +320,14 @@
+ 		DBG1(DBG_NET, "received packet: from %#H to %#H", source, dest);
+ 		data_offset = 0;
+ 		/* remove non esp marker */
+-		if (dest->get_port(dest) == IKEV2_NATT_PORT)
+-		{
+-			data_offset += MARKER_LEN;
+-		}
++        for (i=0; i<currentPortNum; i++)
++        {
++            if (dest->get_port(dest) == portNatArray[i])
++            {
++                data_offset += MARKER_LEN;
++                break;
++            }
++        }
+ 		/* fill in packet */
+ 		data.len = bytes_read - data_offset;
+ 		data.ptr = malloc(data.len);
+@@ -327,6 +354,7 @@
+ 	struct msghdr msg;
+ 	struct cmsghdr *cmsg;
+ 	struct iovec iov;
++    int i = 0;
+ 
+ 	src = packet->get_source(packet);
+ 	dst = packet->get_destination(packet);
+@@ -337,45 +365,49 @@
+ 	/* send data */
+ 	sport = src->get_port(src);
+ 	family = dst->get_family(dst);
+-	if (sport == IKEV2_UDP_PORT)
+-	{
+-		if (family == AF_INET)
+-		{
+-			skt = this->ipv4;
+-		}
+-		else
+-		{
+-			skt = this->ipv6;
+-		}
+-	}
+-	else if (sport == IKEV2_NATT_PORT)
+-	{
+-		if (family == AF_INET)
+-		{
+-			skt = this->ipv4_natt;
+-		}
+-		else
+-		{
+-			skt = this->ipv6_natt;
+-		}
+-		/* NAT keepalives without marker */
+-		if (data.len != 1 || data.ptr[0] != 0xFF)
+-		{
+-			/* add non esp marker to packet */
+-			marked = chunk_alloc(data.len + MARKER_LEN);
+-			memset(marked.ptr, 0, MARKER_LEN);
+-			memcpy(marked.ptr + MARKER_LEN, data.ptr, data.len);
+-			/* let the packet do the clean up for us */
+-			packet->set_data(packet, marked);
+-			data = marked;
+-		}
+-	}
+-	else
+-	{
+-		DBG1(DBG_NET, "unable to locate a send socket for port %d", sport);
+-		return FAILED;
+-	}
+-
++    for (i=0; i<currentPortNum; i++)
++    {
++    	if (sport == portArray[i])
++    	{
++    		if (family == AF_INET)
++    		{
++    			skt = this->ipv4[i];
++    		}
++    		else
++    		{
++    			skt = this->ipv6;
++    		}
++            break;
++    	}
++    	else if (sport == portNatArray[i])
++    	{
++    		if (family == AF_INET)
++    		{
++    			skt = this->ipv4_natt[i];
++    		}
++    		else
++    		{
++    			skt = this->ipv6_natt;
++    		}
++    		/* NAT keepalives without marker */
++    		if (data.len != 1 || data.ptr[0] != 0xFF)
++    		{
++    			/* add non esp marker to packet */
++    			marked = chunk_alloc(data.len + MARKER_LEN);
++    			memset(marked.ptr, 0, MARKER_LEN);
++    			memcpy(marked.ptr + MARKER_LEN, data.ptr, data.len);
++    			/* let the packet do the clean up for us */
++    			packet->set_data(packet, marked);
++    			data = marked;
++    		}
++            break;
++    	}
++    }
++    if (i == currentPortNum)
++    {
++        DBG1(DBG_NET, "unable to locate a send socket for port %d", sport);
++        return FAILED;
++    }
+ 	memset(&msg, 0, sizeof(struct msghdr));
+ 	msg.msg_name = dst->get_sockaddr(dst);;
+ 	msg.msg_namelen = *dst->get_sockaddr_len(dst);
+@@ -550,14 +582,18 @@
+ METHOD(socket_t, destroy, void,
+ 	private_socket_default_socket_t *this)
+ {
+-	if (this->ipv4)
+-	{
+-		close(this->ipv4);
+-	}
+-	if (this->ipv4_natt)
+-	{
+-		close(this->ipv4_natt);
+-	}
++    int i = 0;
++    for (i=0; i<currentPortNum; i++)
++    {
++    	if (this->ipv4[i])
++    	{
++    		close(this->ipv4[i]);
++    	}
++    	if (this->ipv4_natt[i])
++    	{
++    		close(this->ipv4_natt[i]);
++    	}
++    }
+ 	if (this->ipv6)
+ 	{
+ 		close(this->ipv6);
+@@ -575,6 +611,9 @@
+ socket_default_socket_t *socket_default_socket_create()
+ {
+ 	private_socket_default_socket_t *this;
++    int i = 0;
++    bool canOpenSocket = FALSE;
++    bool multPortSwitch = FALSE;
+ 
+ 	INIT(this,
+ 		.public = {
+@@ -599,21 +638,52 @@
+ 		}
+ 	}
+ #endif
++    portArray[0] = lib->settings->get_int(lib->settings,"charon.multi_port0", 500);
++    portArray[1] = lib->settings->get_int(lib->settings,"charon.multi_port1", 18295);
++    portArray[2] = lib->settings->get_int(lib->settings,"charon.multi_port2", 38295);
++    portArray[3] = lib->settings->get_int(lib->settings,"charon.multi_port3", 49295);
++    portArray[4] = lib->settings->get_int(lib->settings,"charon.multi_port4", 50295);
++    portArray[5] = lib->settings->get_int(lib->settings,"charon.multi_port5", 60295);
+ 
+-	this->ipv4 = open_socket(this, AF_INET, IKEV2_UDP_PORT);
+-	if (this->ipv4 == 0)
+-	{
+-		DBG1(DBG_NET, "could not open IPv4 socket, IPv4 disabled");
+-	}
+-	else
+-	{
+-		this->ipv4_natt = open_socket(this, AF_INET, IKEV2_NATT_PORT);
+-		if (this->ipv4_natt == 0)
+-		{
+-			DBG1(DBG_NET, "could not open IPv4 NAT-T socket");
+-		}
+-	}
++    portNatArray[0] = lib->settings->get_int(lib->settings,"charon.multi_nat_port0", 4500);
++    portNatArray[1] = lib->settings->get_int(lib->settings,"charon.multi_nat_port1", 18296);
++    portNatArray[2] = lib->settings->get_int(lib->settings,"charon.multi_nat_port2", 38296);
++    portNatArray[3] = lib->settings->get_int(lib->settings,"charon.multi_nat_port3", 49296);
++    portNatArray[4] = lib->settings->get_int(lib->settings,"charon.multi_nat_port4", 50296);
++    portNatArray[5] = lib->settings->get_int(lib->settings,"charon.multi_nat_port5", 60296);
+ 
++    //当多端口功能关闭时，只能用500和4500端口建立通道
++    multPortSwitch = lib->settings->get_bool(lib->settings,"charon.multi_port_switch", FALSE);
++    if (TRUE == multPortSwitch)
++    {
++		DBG1(DBG_NET, "multPortSwitch is TRUE, multi-port function is enable!");
++        currentPortNum = MAX_PORT_NUM;
++    }
++    else
++    {
++        DBG1(DBG_NET, "multPortSwitch is FALSE, multi-port function is disable!");
++        currentPortNum = MIN_PORT_NUM;
++        portArray[0] = 500;
++        portNatArray[0] = 4500;
++    }
++
++    for (i=0; i<currentPortNum; i++)
++    {
++    	this->ipv4[i] = open_socket(this, AF_INET, portArray[i]);
++    	if (this->ipv4[i] == 0)
++    	{
++    		DBG1(DBG_NET, "could not open IPv4[%d] socket, IPv4[%d] disabled, portArray[%d] = %d", i, i, i, portArray[i]);
++    	}
++    	else
++    	{
++    		this->ipv4_natt[i] = open_socket(this, AF_INET, portNatArray[i]);
++    		if (this->ipv4_natt[i] == 0)
++    		{
++    			DBG1(DBG_NET, "could not open IPv4[%d] NAT-T socket, portNatArray[%d] = %d", i, i, portNatArray[i]);
++    		}
++    	}
++    }
++
+ 	this->ipv6 = open_socket(this, AF_INET6, IKEV2_UDP_PORT);
+ 	if (this->ipv6 == 0)
+ 	{
+@@ -628,7 +698,16 @@
+ 		}
+ 	}
+ 
+-	if (!this->ipv4 && !this->ipv6)
++    for (i=0; i<currentPortNum; i++)
++    {
++        if (this->ipv4[i])
++        {
++            canOpenSocket = TRUE;
++            break;
++        }            
++    }   
++    
++	if ((FALSE == canOpenSocket) && !this->ipv6)
+ 	{
+ 		DBG1(DBG_NET, "could not create any sockets");
+ 		destroy(this);
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/plugins/eap_radius/eap_radius.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/plugins/eap_radius/eap_radius.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/plugins/eap_radius/eap_radius.c	(版本 2506)
+@@ -16,7 +16,10 @@
+ #include "eap_radius.h"
+ #include "eap_radius_plugin.h"
+ #include "eap_radius_forward.h"
+-
++//hhzh begin
++//add for pki
++#include <hydra.h>
++//hhzh end
+ #include <radius_message.h>
+ #include <radius_client.h>
+ 
+@@ -323,6 +326,7 @@
+ 	radius_message_t *request, *response;
+ 	status_t status = FAILED;
+ 	chunk_t data;
++    radius_message_code_t tempCodeType = RMC_ACCESS_REJECT;
+ 
+ 	request = radius_message_create(RMC_ACCESS_REQUEST);
+ 	request->add(request, RAT_USER_NAME, this->peer->get_encoding(this->peer));
+@@ -347,8 +351,15 @@
+ 	response = this->client->request(this->client, request);
+ 	if (response)
+ 	{
++        
+ 		eap_radius_forward_to_ike(response);
+-		switch (response->get_code(response))
++        tempCodeType = response->get_code(response);
++        //hhzh begin
++        //add for pki:3A对基站的认证请求数
++        if (tempCodeType == RMC_ACCESS_ACCEPT || tempCodeType == RMC_ACCESS_REJECT)
++            hydra->mgr_adapter->ntf_ipsec_kpi(hydra->mgr_adapter, SSI_IPSECKPI_EAP_REQ);
++        //hhzh end
++		switch (tempCodeType)
+ 		{
+ 			case RMC_ACCESS_CHALLENGE:
+ 				if (radius2ike(this, response, out))
+@@ -368,6 +379,10 @@
+ 					process_filter_id(this, response);
+ 				}
+ 				process_timeout(this, response);
++				//hhzh begin
++				//add for pki:3A对基站的认证成功
++                hydra->mgr_adapter->ntf_ipsec_kpi(hydra->mgr_adapter, SSI_IPSECKPI_EAP_SUCC);
++				//hhzh end
+ 				DBG1(DBG_IKE, "RADIUS authentication of '%Y' successful",
+ 					 this->peer);
+ 				status = SUCCESS;
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/plugins/dhcp/dhcp_socket.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/plugins/dhcp/dhcp_socket.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/plugins/dhcp/dhcp_socket.c	(版本 2506)
+@@ -229,7 +229,7 @@
+         {
+ 		    src = hydra->kernel_interface->get_source_addr(hydra->kernel_interface,this->dst, NULL);
+         }
+-        DBG1(DBG_CFG, "DHCP relay IP: %H", src);
++        DBG2(DBG_CFG, "DHCP relay IP: %H transaction_id:0x%8x", src, dhcp->transaction_id);
+ 		//ljr end
+ 		if (src)
+ 		{
+@@ -254,7 +254,11 @@
+ 		id = transaction->get_id(transaction);
+ 	}
+ 	memcpy(&dhcp->client_hw_addr[2], &id, sizeof(id));
+-
++    DBG2(DBG_CFG, "client MAC address: %2x:%2x:%.2x:%2x:%2x:%2x", 
++        (u_int8_t)dhcp->client_hw_addr[0], (u_int8_t)dhcp->client_hw_addr[1], 
++        (u_int8_t)dhcp->client_hw_addr[2], (u_int8_t)dhcp->client_hw_addr[3], 
++        (u_int8_t)dhcp->client_hw_addr[4], (u_int8_t)dhcp->client_hw_addr[5]);
++    
+ 	dhcp->magic_cookie = htonl(0x63825363);
+ 
+ 	option = (dhcp_option_t*)&dhcp->options[optlen];
+@@ -296,6 +300,7 @@
+ 		dst = this->dst;
+ 	}
+ 	len = offsetof(dhcp_t, magic_cookie) + ((optlen + 4) / 64 * 64 + 64);
++    DBG2(DBG_CFG, "sending DHCP message to %H, len=%d", dst, len);
+ 	return sendto(this->send, dhcp, len, 0, dst->get_sockaddr(dst),
+ 				  *dst->get_sockaddr_len(dst)) == len;
+ }
+@@ -391,6 +396,9 @@
+ 	u_int32_t id;
+ 	int try;
+     timeval_t t1, t2;
++    //ljr:等待响应的超时时间，单位ms
++    //dhcpd对discover包的响应固定在1秒以上，原因未知，因此第一个超时时间要大于1秒
++    static const u_int timeout[DHCP_TRIES]={1500, 2000, 2500};
+ 
+ 	this->rng->get_bytes(this->rng, sizeof(id), (u_int8_t*)&id);
+ 	transaction = dhcp_transaction_create(id, identity);
+@@ -398,12 +406,12 @@
+ 	this->mutex->lock(this->mutex);
+ 	this->discover->insert_last(this->discover, transaction);
+     //ljr begin:
+-	try = 1;
++	try = 0;
+     discover(this, transaction);
+     time_monotonic(&t1);
+-    while (try <= DHCP_TRIES )
++    while (try < DHCP_TRIES )
+ 	{        
+-        if (this->condvar->timed_wait(this->condvar, this->mutex,  1000*try))
++        if (this->condvar->timed_wait(this->condvar, this->mutex,  timeout[try]))
+         {
+             DBG1(DBG_CFG, "try another DHCP DISCOVER");
+             try++;
+@@ -415,17 +423,17 @@
+ 		{
+             if(this->request->find_first(this->request, NULL, (void**)&transaction) == SUCCESS)
+             {
+-                DBG1(DBG_CFG, "DHCP OFFER is found after broadcast, break");
++                DBG1(DBG_CFG, "DHCP OFFER is mine after broadcast, break");
+ 			    break;
+             }
+             else
+             {
+                 //wake up by another DHCP OFFER
+-                DBG1(DBG_CFG, "DHCP OFFER is not found, continue waiting");
++                DBG2(DBG_CFG, "DHCP OFFER is not mine, continue waiting");
+                 time_monotonic(&t2);
+                 //DBG1(DBG_CFG, "DHCP DISCOVER: t1: %d, try: %d, t2: %d", t1.tv_sec,try,t2.tv_sec);
+                 //if(t1.tv_sec +  try)*1000 + t1.tv_usec < t2.tv_sec*1000 +t2.tv_usec)
+-                if(t1.tv_sec +  try < t2.tv_sec)
++                if(t1.tv_sec +  timeout[try] < t2.tv_sec)
+                 {
+                     DBG1(DBG_CFG, "DHCP DISCOVER try++");
+                     try++;
+@@ -441,12 +449,12 @@
+ 		return NULL;
+ 	}
+     
+-    try = 1;
++    try = 0;
+     request(this, transaction);
+     time_monotonic(&t1);
+-    while (try <= DHCP_TRIES )
++    while (try < DHCP_TRIES )
+ 	{        
+-        if (this->condvar->timed_wait(this->condvar, this->mutex,  1000*try))
++        if (this->condvar->timed_wait(this->condvar, this->mutex,  timeout[try]))
+         {
+             DBG1(DBG_CFG, "try another DHCP REQUEST");
+             try++;
+@@ -457,17 +465,17 @@
+ 		{
+             if(this->completed->remove(this->completed, transaction, NULL))
+             {
+-                DBG1(DBG_CFG, "DHCP ACK is found after broadcast, break");
++                DBG1(DBG_CFG, "DHCP ACK is mine after broadcast, break");
+ 			    break;
+             }
+             else
+             {
+                 //wait up by another DHCP OFFER
+-                DBG1(DBG_CFG, "DHCP ACK is not found, continue waiting");
++                DBG2(DBG_CFG, "DHCP ACK is not mine, continue waiting");
+                 time_monotonic(&t2);
+                 //DBG1(DBG_CFG, "DHCP REQUEST: t1: %d, try: %d, t2: %d", t1.tv_sec,try,t2.tv_sec);
+                 //if(t1.tv_sec +  try)*1000 + t1.tv_usec < t2.tv_sec*1000 +t2.tv_usec)
+-                if(t1.tv_sec +  try < t2.tv_sec)
++                if(t1.tv_sec +  timeout[try] < t2.tv_sec)
+                 {
+                     DBG1(DBG_CFG, "DHCP REQUEST try++");
+                     try++;
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/ike_sa.h
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/ike_sa.h	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/ike_sa.h	(版本 2506)
+@@ -290,7 +290,23 @@
+ 	 */
+ 	void (*set_state) (ike_sa_t *this, ike_sa_state_t ike_sa);
+ 
++    //hhzh begin
+ 	/**
++	 * Get the state of the hascheckin.
++	 *
++	 * @return				state of the hascheckin
++	 */
++	bool (*get_hascheckin) (ike_sa_t *this);
++
++	/**
++	 * Set the state of the hascheckin.
++	 *
++	 * @param state			state to set for the hascheckin
++	 */
++	void (*set_hascheckin) (ike_sa_t *this, bool ike_hascheckin);
++    //hhzh end
++
++	/**
+ 	 * Get the name of the connection this IKE_SA uses.
+ 	 *
+ 	 * @return				name
+@@ -397,12 +413,26 @@
+ 	identification_t* (*get_other_cert_subject_id) (ike_sa_t *this);
+ 
+     /**
++	 * Get the other peer's first auth identification.
++	 *
++	 * @return				identification
++	 */
++	identification_t* (*get_other_first_auth_id) (ike_sa_t *this);
++
++    /**
+ 	 * Get the other peer's certification subject identification.
+ 	 *
+ 	 * @return				identification
+ 	 */
+-	void (*set_other_cert_subject_id) (ike_sa_t *this, identification_t* id);    
++	void (*set_other_cert_subject_id) (ike_sa_t *this, identification_t* id);  
+ 
++     /**
++	 * Get the other peer's first auth identification.
++	 *
++	 * @return				identification
++	 */
++	void (*set_other_first_auth_id) (ike_sa_t *this, identification_t* id); 
++
+ 	/**
+ 	 * Get the others peer identity, but prefer an EAP-Identity.
+ 	 *
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/tasks/ike_natd.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/tasks/ike_natd.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/tasks/ike_natd.c	(版本 2506)
+@@ -105,7 +105,7 @@
+ 	/*  natd_hash = SHA1( spi_i | spi_r | address | port ) */
+ 	natd_chunk = chunk_cat("cccc", spi_i_chunk, spi_r_chunk, addr_chunk, port_chunk);
+ 	this->hasher->allocate_hash(this->hasher, natd_chunk, &natd_hash);
+-	DBG3(DBG_IKE, "natd_chunk %B", &natd_chunk);
++	DBG2(DBG_IKE, "natd_chunk %B", &natd_chunk);
+ 	DBG3(DBG_IKE, "natd_hash %B", &natd_hash);
+ 
+ 	chunk_free(&natd_chunk);
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/tasks/child_create.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/tasks/child_create.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/tasks/child_create.c	(版本 2506)
+@@ -490,14 +490,14 @@
+ 			(status_o != SUCCESS) ? "outbound " : "");
+ 		return FAILED;
+ 	}
+-
++    DBG1(DBG_IKE, "add sp: start"); 
+ 	status = this->child_sa->add_policies(this->child_sa, my_ts, other_ts);
+ 	if (status != SUCCESS)
+ 	{
+ 		DBG1(DBG_IKE, "unable to install IPsec policies (SPD) in kernel");
+ 		return NOT_FOUND;
+ 	}
+-
++    DBG1(DBG_IKE, "add sp: finish");
+ 	charon->bus->child_keys(charon->bus, this->child_sa, this->initiator,
+ 							this->dh, nonce_i, nonce_r);
+ 
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/child_sa.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/child_sa.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/child_sa.c	(版本 2506)
+@@ -766,6 +766,7 @@
+ 		{
+ 			/* install outbound drop policy to avoid packets leaving unencrypted
+ 			 * when updating policies */
++			 /* cavium不存在这个问题,因此不用这个操作
+ 			if (priority == POLICY_PRIORITY_DEFAULT)
+ 			{
+ 				status |= install_policies_internal(this, this->my_addr,
+@@ -773,7 +774,7 @@
+ 									&my_sa, &other_sa, POLICY_DROP,
+ 									POLICY_PRIORITY_FALLBACK);
+ 			}
+-
++            */
+ 			/* install policies */
+ 			status |= install_policies_internal(this, this->my_addr,
+ 									this->other_addr, my_ts, other_ts,
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/authenticators/psk_authenticator.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/authenticators/psk_authenticator.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/authenticators/psk_authenticator.c	(版本 2506)
+@@ -15,7 +15,10 @@
+  */
+ 
+ #include "psk_authenticator.h"
+-
++//hhzh begin
++//add for pki
++#include <hydra.h>
++//hhzh end
+ #include <daemon.h>
+ #include <encoding/payloads/auth_payload.h>
+ 
+@@ -109,6 +112,10 @@
+ 	other_id = this->ike_sa->get_other_id(this->ike_sa);
+ 	enumerator = lib->credmgr->create_shared_enumerator(lib->credmgr,
+ 												SHARED_IKE, my_id, other_id);
++	//hhzh begin
++	//add for pki : PSK方式中网关对基站的认证											
++    hydra->mgr_adapter->ntf_ipsec_kpi(hydra->mgr_adapter, SSI_IPSECKPI_PSK_REQ);
++	//hhzh end
+ 	while (!authenticated && enumerator->enumerate(enumerator, &key, NULL, NULL))
+ 	{
+ 		keys_found++;
+@@ -119,6 +126,10 @@
+ 		{
+ 			DBG1(DBG_IKE, "authentication of '%Y' with %N successful",
+ 				 other_id, auth_method_names, AUTH_PSK);
++			//hhzh begin
++			//add for pki : PSK方式中网关对基站的认证成功
++			hydra->mgr_adapter->ntf_ipsec_kpi(hydra->mgr_adapter, SSI_IPSECKPI_PSK_SUCC);
++			//hhzh end
+ 			authenticated = TRUE;
+ 		}
+ 		chunk_free(&auth_data);
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/authenticators/pubkey_authenticator.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/authenticators/pubkey_authenticator.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/authenticators/pubkey_authenticator.c	(版本 2506)
+@@ -18,6 +18,10 @@
+ #include "pubkey_authenticator.h"
+ 
+ #include <daemon.h>
++//hhzh begin
++//add for pki 
++#include <hydra.h>
++//hhzh end
+ #include <encoding/payloads/auth_payload.h>
+ 
+ typedef struct private_pubkey_authenticator_t private_pubkey_authenticator_t;
+@@ -147,6 +151,10 @@
+ 	keymat_t *keymat;
+ 
+ 	auth_payload = (auth_payload_t*)message->get_payload(message, AUTHENTICATION);
++    //hhzh begin
++	//add for pki : 证书方式中，网关对基站的认证请求
++	hydra->mgr_adapter->ntf_ipsec_kpi(hydra->mgr_adapter, SSI_IPSECKPI_CERT_REQ);
++	//hhzh end
+ 	if (!auth_payload)
+ 	{
+ 		return FAILED;
+@@ -195,6 +203,10 @@
+ 		{
+ 			DBG1(DBG_IKE, "authentication of '%Y' with %N successful",
+ 						   id, auth_method_names, auth_method);
++			//hhzh begin
++			//add for pki : 证书方式中，网关对基站的认证成功
++            hydra->mgr_adapter->ntf_ipsec_kpi(hydra->mgr_adapter, SSI_IPSECKPI_CERT_SUCC);
++			//hhzh end
+ 			status = SUCCESS;
+ 			auth->merge(auth, current_auth, FALSE);
+ 			auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PUBKEY);
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/ike_sa_manager.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/ike_sa_manager.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/ike_sa_manager.c	(版本 2506)
+@@ -201,29 +201,15 @@
+  */
+ static u_int ike_sa_id_hash(ike_sa_id_t *ike_sa_id)
+ {
+-    /* IKEv2 does not mandate random SPIs (RFC 5996, 2.6), they just have to be
+-	 * locally unique, so we use our randomly allocated SPI whether we are
+-	 * initiator or responder to ensure a good distribution.  The latter is not
+-	 * possible for IKEv1 as we don't know whether we are original initiator or
+-	 * not (based on the IKE header).  But as RFC 2408, section 2.5.3 proposes
+-	 * SPIs (Cookies) to be allocated near random (we allocate them randomly
+-	 * anyway) it seems safe to always use the initiator SPI. */
+-
+-    if (ike_sa_id->is_initiator(ike_sa_id))
+-	{
+-        DBG2(DBG_MGR, "initiator_spi: 0x%x", ike_sa_id->get_initiator_spi(ike_sa_id));
+-		return ike_sa_id->get_initiator_spi(ike_sa_id);
+-	}
+-
+-    DBG2(DBG_MGR, "responder_spi: 0x%x", ike_sa_id->get_responder_spi(ike_sa_id));
+-	return ike_sa_id->get_responder_spi(ike_sa_id);
+-
+ 	/* we always use initiator spi as key */
+-    //u_int64_t spi = ike_sa_id->get_initiator_spi(ike_sa_id);
+-    //u_int64_t spi_result = spi&0x00000000FFFFFFFF + (spi >> 32);
+-    //u_int64_t spi_result = (spi >> 40);
+-    //DBG1(DBG_MGR, "spi_result: 0x%x", spi_result);
+-	//return spi_result;
++	//return ike_sa_id->get_initiator_spi(ike_sa_id);
++    //测试仪随机变化的是高32位，低32位是固定值
++    //但实际应用中，有可能是高32位为0，低32位是随机值
++    //因此要处理这两种情况
++    u_int64_t spi = ike_sa_id->get_initiator_spi(ike_sa_id);
++    u_int result = (spi >> 32) + (spi & 0xFFFFFFFF);
++    DBG2(DBG_MGR, "ike_sa_id_hash: spi=%016llx result=%08x", spi, result);
++	return result;    
+ }
+ 
+ typedef struct half_open_t half_open_t;
+@@ -1027,6 +1013,7 @@
+ 	u_int segment;
+ 	entry_t *entry;
+ 	ike_sa_t *ike_sa = NULL;
++    identification_t *other_id, *other_first_auth_id, *temp_id;
+ 	ike_sa_id_t *id;
+ 
+ 	id = message->get_ike_sa_id(message);
+@@ -1116,7 +1103,7 @@
+ 		}
+ 		else if (wait_for_entry(this, entry, segment))
+ 		{
+-            //第一个IKE_AUTH会进入这个判断
++            //每一个IKE_AUTH会进入这个判断
+ 			ike_sa_id_t *ike_id = entry->ike_sa->get_id(entry->ike_sa);
+ 			entry->checked_out = TRUE;
+ 			entry->message_id = message->get_message_id(message);
+@@ -1125,6 +1112,22 @@
+ 				ike_id->set_responder_spi(ike_id, id->get_responder_spi(id));
+ 			}
+ 			ike_sa = entry->ike_sa;
++            other_id = ike_sa->get_other_id(ike_sa);
++            other_first_auth_id = ike_sa->get_other_first_auth_id(ike_sa);
++            if (other_first_auth_id)
++            {
++                temp_id = identification_create_from_string("%any");
++                if (!other_first_auth_id->equals(other_first_auth_id, other_id) && other_first_auth_id->equals(other_first_auth_id, temp_id))
++                {
++                    ike_sa->set_other_first_auth_id(ike_sa, other_id->clone(other_id));
++                }
++                temp_id->destroy(temp_id);
++            }
++            else
++            {
++                ike_sa->set_other_first_auth_id(ike_sa, other_id->clone(other_id));
++            }
++            
+ 			DBG2(DBG_MGR, "IKE_SA %s[%u] successfully checked out",
+ 					ike_sa->get_name(ike_sa), ike_sa->get_unique_id(ike_sa));
+ 		}
+@@ -1366,15 +1369,19 @@
+     
+ 	/* apply identities for duplicate test */	
+ 	{      
+-		entry->my_id = my_id->clone(my_id);
+-		entry->other_id = other_id->clone(other_id);
+-        
+-		if (!entry->other)
++        DESTROY_IF(entry->my_id);
++        entry->my_id = my_id->clone(my_id);
++
++        DESTROY_IF(entry->other_id);            
++        entry->other_id = other_id->clone(other_id);
++
++        if (!entry->other)
+ 		{
+-			entry->other = other->clone(other);
++		    entry->other = other->clone(other);
+ 		}
+         
+ 		put_connected_peers(this, entry, TRUE);
++        ike_sa->set_hascheckin(ike_sa, FALSE);
+ 	}
+ 
+ 	unlock_single_segment(this, segment);
+@@ -1394,7 +1401,7 @@
+ 	entry_t *entry;
+ 	ike_sa_id_t *ike_sa_id;
+ 	host_t *other;
+-	identification_t *my_id, *other_id;
++	identification_t *my_id, *other_id, *other_first_auth_id;
+ 	u_int segment;
+ 
+ 	ike_sa_id = ike_sa->get_id(ike_sa);
+@@ -1449,21 +1456,42 @@
+ 	}
+ 
+ 	/* apply identities for duplicate test */
+-	if (ike_sa->get_state(ike_sa) == IKE_ESTABLISHED /*&&
+-		entry->my_id == NULL && entry->other_id == NULL*/)
++    //by hhzh
++   	if (ike_sa->get_state(ike_sa) == IKE_ESTABLISHED &&
++		ike_sa->get_hascheckin(ike_sa) == FALSE)
+ 	{
+-		entry->my_id = my_id->clone(my_id);
+-		entry->other_id = other_id->clone(other_id);
+-		if (!entry->other)
++        DESTROY_IF(entry->my_id);
++        entry->my_id = my_id->clone(my_id);
++
++        DESTROY_IF(entry->other_id);            
++        entry->other_id = other_id->clone(other_id);
++
++        if (!entry->other)
+ 		{
+-			entry->other = other->clone(other);
++    	    entry->other = other->clone(other);
+ 		}
++        
++       
+ 		put_connected_peers(this, entry, FALSE);        
+         DBG2(DBG_MGR, "put to connected table");
+        
+         remove_connected_peers(this, entry, TRUE);
++        other_first_auth_id = ike_sa->get_other_first_auth_id(ike_sa);
++        if (NULL != other_first_auth_id)
++        {
++            if (!other_first_auth_id->equals(other_first_auth_id, other_id))
++            {
++                DESTROY_IF(entry->other_id);
++                entry->other_id = other_first_auth_id->clone(other_first_auth_id);
++                remove_connected_peers(this, entry, TRUE);
++            }
++        }
+         DBG2(DBG_MGR, "remove from establishing table");
++        
++        ike_sa->set_hascheckin(ike_sa, TRUE);
+     }
++    //end hhzh
++ 
+ 
+ 	unlock_single_segment(this, segment);
+ 
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/keymat.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/keymat.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/keymat.c	(版本 2506)
+@@ -154,12 +154,12 @@
+ 	key_size = aead_i->get_key_size(aead_i);
+ 
+ 	prf_plus->allocate_bytes(prf_plus, key_size, &key);
+-	DBG4(DBG_IKE, "Sk_ei secret %B", &key);
++	DBG2(DBG_IKE, "Sk_ei secret %B", &key);
+ 	aead_i->set_key(aead_i, key);
+ 	chunk_clear(&key);
+ 
+ 	prf_plus->allocate_bytes(prf_plus, key_size, &key);
+-	DBG4(DBG_IKE, "Sk_er secret %B", &key);
++	DBG2(DBG_IKE, "Sk_er secret %B", &key);
+ 	aead_r->set_key(aead_r, key);
+ 	chunk_clear(&key);
+ 
+@@ -200,12 +200,12 @@
+ 	key_size = signer_i->get_key_size(signer_i);
+ 
+ 	prf_plus->allocate_bytes(prf_plus, key_size, &key);
+-	DBG4(DBG_IKE, "Sk_ai secret %B", &key);
++	DBG2(DBG_IKE, "Sk_ai secret %B", &key);
+ 	signer_i->set_key(signer_i, key);
+ 	chunk_clear(&key);
+ 
+ 	prf_plus->allocate_bytes(prf_plus, key_size, &key);
+-	DBG4(DBG_IKE, "Sk_ar secret %B", &key);
++	DBG2(DBG_IKE, "Sk_ar secret %B", &key);
+ 	signer_r->set_key(signer_r, key);
+ 	chunk_clear(&key);
+ 
+@@ -224,12 +224,12 @@
+ 	key_size = crypter_i->get_key_size(crypter_i);
+ 
+ 	prf_plus->allocate_bytes(prf_plus, key_size, &key);
+-	DBG4(DBG_IKE, "Sk_ei secret %B", &key);
++	DBG2(DBG_IKE, "Sk_ei secret %B", &key);
+ 	crypter_i->set_key(crypter_i, key);
+ 	chunk_clear(&key);
+ 
+ 	prf_plus->allocate_bytes(prf_plus, key_size, &key);
+-	DBG4(DBG_IKE, "Sk_er secret %B", &key);
++	DBG2(DBG_IKE, "Sk_er secret %B", &key);
+ 	crypter_r->set_key(crypter_r, key);
+ 	chunk_clear(&key);
+ 
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/ike_sa.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/ike_sa.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/ike_sa.c	(版本 2506)
+@@ -156,6 +156,14 @@
+ 	 */
+ 	host_t *other_host_ike_init;
+ 	//ljr end
++
++   	//hhzh begin
++	/**
++	 * Should be checked in once
++	 */
++	bool hasCheckIn;
++	//hhzh end 
++    
+ #ifdef ME
+ 	/**
+ 	 * Are we mediation server
+@@ -188,6 +196,11 @@
+ 	 */
+     identification_t * other_cert_subject_id;
+ 
++    /**
++	 * first auth used for other 
++	 */
++    identification_t * other_first_auth_id;
++
+ 	/**
+ 	 * set of extensions the peer supports
+ 	 */
+@@ -741,6 +754,21 @@
+ 	}
+ }
+ 
++
++METHOD(ike_sa_t, get_hascheckin, ike_sa_state_t,
++	private_ike_sa_t *this)
++{
++	return this->hasCheckIn;
++}
++
++METHOD(ike_sa_t, set_hascheckin, void,
++	private_ike_sa_t *this, bool ike_hascheckin)
++{
++	this->hasCheckIn = ike_hascheckin;
++}
++
++
++
+ METHOD(ike_sa_t, reset, void,
+ 	private_ike_sa_t *this)
+ {
+@@ -1357,6 +1385,7 @@
+ 				return DESTROY_ME;
+ 			}
+ 			/* add a timeout if peer does not establish it completely */
++            DBG2(DBG_IKE, "add half open job for %N", exchange_type_names, message->get_exchange_type(message));
+ 			job = (job_t*)delete_ike_sa_job_create(this->ike_sa_id, FALSE);
+ 			lib->scheduler->schedule_job(lib->scheduler, job,
+ 					lib->settings->get_int(lib->settings,
+@@ -1407,6 +1436,12 @@
+ 	return this->other_cert_subject_id;
+ }
+ 
++METHOD(ike_sa_t, get_other_first_auth_id, identification_t*,
++	private_ike_sa_t *this)
++{
++	return this->other_first_auth_id;
++}
++
+ METHOD(ike_sa_t, set_other_cert_subject_id, void,
+ 	private_ike_sa_t *this, identification_t *other_subject_id)
+ {
+@@ -1414,6 +1449,13 @@
+ 	this->other_cert_subject_id = other_subject_id;
+ }
+ 
++METHOD(ike_sa_t, set_other_first_auth_id, void,
++	private_ike_sa_t *this, identification_t *other_first_auth_id)
++{
++    DESTROY_IF(this->other_first_auth_id);
++	this->other_first_auth_id = other_first_auth_id;
++}
++
+ METHOD(ike_sa_t, get_other_eap_id, identification_t*,
+ 	private_ike_sa_t *this)
+ {
+@@ -2313,6 +2355,10 @@
+ 			.get_my_host_ike_init = _get_my_host_ike_init,
+ 			.get_other_host_ike_init = _get_other_host_ike_init,
+ 			//ljr end
++			//hhzh begin
++			.get_hascheckin = _get_hascheckin,
++			.set_hascheckin = _set_hascheckin,
++			//hhzh end
+ 			.set_message_id = _set_message_id,
+ 			.float_ports = _float_ports,
+ 			.update_hosts = _update_hosts,
+@@ -2322,6 +2368,8 @@
+ 			.set_other_id = _set_other_id,
+ 			.get_other_cert_subject_id = _get_other_cert_subject_id,
+ 			.set_other_cert_subject_id = _set_other_cert_subject_id,
++			.get_other_first_auth_id = _get_other_first_auth_id,
++			.set_other_first_auth_id = _set_other_first_auth_id,
+ 			.get_other_eap_id = _get_other_eap_id,
+ 			.enable_extension = _enable_extension,
+ 			.supports_extension = _supports_extension,
+@@ -2383,8 +2431,12 @@
+ 		//ljr end
+ 		.my_id = identification_create_from_encoding(ID_ANY, chunk_empty),
+ 		.other_id = identification_create_from_encoding(ID_ANY, chunk_empty),
++		.other_first_auth_id = NULL,
+ 		.keymat = keymat_create(ike_sa_id->is_initiator(ike_sa_id)),
+ 		.state = IKE_CREATED,
++		//hhzh begin
++		.hasCheckIn = FALSE,
++		//hhzh end
+ 		.stats[STAT_INBOUND] = time_monotonic(NULL),
+ 		.stats[STAT_OUTBOUND] = time_monotonic(NULL),
+ 		.my_auth = auth_cfg_create(),
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/task_manager.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/task_manager.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/sa/task_manager.c	(版本 2506)
+@@ -17,7 +17,10 @@
+ #include "task_manager.h"
+ 
+ #include <math.h>
+-
++//hhzh begin
++//add for pki
++#include <hydra.h>
++//hhzh end
+ #include <daemon.h>
+ #include <sa/tasks/ike_init.h>
+ #include <sa/tasks/ike_natd.h>
+@@ -152,6 +155,14 @@
+ 	 * Base to calculate retransmission timeout
+ 	 */
+ 	double retransmit_base;
++
++	/**
++	 * ljr:delete information有两种，一种为ike delete,一种为child delte
++	 *     对应两个不同的任务；在性能测试时有时为了释放更多的资源，
++	 *     会采用只要收到delete information，不管哪种类型，都认为是ike delete,
++	 *     把整个通道删掉，为下一次测试准备好环境。
++	 */
++    bool always_close_ike_on_delete_info;
+ };
+ 
+ /**
+@@ -245,6 +256,10 @@
+ 			{
+ 				DBG1(DBG_IKE, "retransmit %d of request with message ID %d",
+ 					 this->initiating.retransmitted, message_id);
++                //hhzh begin
++                //重传一个IKE包，IKE重传报文数加1
++                hydra->mgr_adapter->ntf_ipsec_kpi(hydra->mgr_adapter, SSI_IPSECKPI_RETRANS_PKT);
++                //hhzh end
+ 			}
+ 			packet = this->initiating.packet->clone(this->initiating.packet);
+ 			charon->sender->send(charon->sender, packet);
+@@ -821,17 +836,29 @@
+ 						}
+ 						case DELETE:
+ 						{
+-							delete = (delete_payload_t*)payload;
+-							if (delete->get_protocol_id(delete) == PROTO_IKE)
+-							{
+-								task = (task_t*)ike_delete_create(this->ike_sa,
+-																FALSE);
+-							}
+-							else
+-							{
+-								task = (task_t*)child_delete_create(this->ike_sa,
+-																PROTO_NONE, 0);
+-							}
++                            if(this->always_close_ike_on_delete_info)
++                            {
++                                task = (task_t*)ike_delete_create(this->ike_sa,
++    																FALSE);
++                                DBG2(DBG_NET, "always_close_ike_on_delete_info");
++                            }
++                            else
++                            {
++                                
++    							delete = (delete_payload_t*)payload;
++    							if (delete->get_protocol_id(delete) == PROTO_IKE)
++    							{
++    								task = (task_t*)ike_delete_create(this->ike_sa,
++    																FALSE);
++                                    DBG2(DBG_NET, "close_ike_on_delete_info");
++    							}
++    							else
++    							{
++    								task = (task_t*)child_delete_create(this->ike_sa,
++    																PROTO_NONE, 0);
++                                    DBG2(DBG_NET, "close_child_on_delete_info");
++    							}
++                            }
+ 							break;
+ 						}
+ 						default:
+@@ -1149,6 +1176,8 @@
+ 								"charon.retransmit_timeout", RETRANSMIT_TIMEOUT),
+ 		.retransmit_base = lib->settings->get_double(lib->settings,
+ 								"charon.retransmit_base", RETRANSMIT_BASE),
++        .always_close_ike_on_delete_info = lib->settings->get_bool(lib->settings,
++								"charon.always_close_ike_on_delete_info", FALSE),								
+ 	);
+ 
+ 	return &this->public;
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/network/sender.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/network/sender.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/network/sender.c	(版本 2506)
+@@ -18,7 +18,10 @@
+ #include <stdlib.h>
+ 
+ #include "sender.h"
+-
++//hhzh begin
++//add for pki
++#include <hydra.h>
++//hhzh end
+ #include <daemon.h>
+ #include <network/socket.h>
+ #include <processing/jobs/callback_job.h>
+@@ -92,6 +95,10 @@
+ 	src = packet->get_source(packet);
+ 	dst = packet->get_destination(packet);
+ 	DBG1(DBG_NET, "sending packet: from %#H to %#H", src, dst);
++    //hhzh begin    
++    //发送一个IKE包，IKE发送报文数加1
++    hydra->mgr_adapter->ntf_ipsec_kpi(hydra->mgr_adapter, SSI_IPSECKPI_SEND_PKT);
++    //hhzh end
+ 
+ 	if (this->send_delay)
+ 	{
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/network/receiver.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/network/receiver.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/network/receiver.c	(版本 2506)
+@@ -19,7 +19,10 @@
+ #include <unistd.h>
+ 
+ #include "receiver.h"
+-
++//hhzh begin
++//add for pki
++#include <hydra.h>
++//hhzh end
+ #include <daemon.h>
+ #include <network/socket.h>
+ #include <network/packet.h>
+@@ -263,6 +266,7 @@
+ 		packet->destroy(packet);
+ 		return FALSE;
+ 	}
++	packet->destroy(packet);
+ 	return TRUE;
+ }
+ 
+@@ -419,6 +423,11 @@
+ 		return JOB_REQUEUE_DIRECT;
+ 	}
+ 
++    //hhzh begin
++    //收到一个合法的IKE包，IKE接收报文数加1
++    hydra->mgr_adapter->ntf_ipsec_kpi(hydra->mgr_adapter, SSI_IPSECKPI_RCVD_PKT);
++    //hhzh end
++
+ 	if (message->get_request(message) &&
+ 		message->get_exchange_type(message) == IKE_SA_INIT)
+ 	{
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/processing/jobs/process_message_job.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/processing/jobs/process_message_job.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libcharon/processing/jobs/process_message_job.c	(版本 2506)
+@@ -73,11 +73,13 @@
+ 			 this->message->get_destination(this->message));
+ 		if (ike_sa->process_message(ike_sa, this->message) == DESTROY_ME)
+ 		{
++            DBG1(DBG_NET, "processing packet finish, check in and destroy ike sa");
+ 			charon->ike_sa_manager->checkin_and_destroy(charon->ike_sa_manager,
+ 														ike_sa);
+ 		}
+ 		else
+ 		{
++            DBG1(DBG_NET, "processing packet finish, check in ike sa");
+ 			charon->ike_sa_manager->checkin(charon->ike_sa_manager, ike_sa);
+ 		}
+ 	}
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libradius/radius_socket.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libradius/radius_socket.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libradius/radius_socket.c	(版本 2506)
+@@ -130,6 +130,9 @@
+ {
+ 	chunk_t data;
+ 	int i, *fd;
++    int radius_retransmit_count = 0;
++    int radius_retransmit_time_sec = 0;
++    int radius_retransmit_time_usec = 0;
+ 	u_int16_t port;
+ 	rng_t *rng = NULL;
+ 
+@@ -159,8 +162,14 @@
+ 	data = request->get_encoding(request);
+ 	DBG3(DBG_CFG, "%B", &data);
+ 
++    radius_retransmit_count = lib->settings->get_int(lib->settings,"charon.radius_retran_count", 3);
++    radius_retransmit_time_sec = lib->settings->get_int(lib->settings,"charon.radius_retran_time_sec", 0);
++    radius_retransmit_time_usec = lib->settings->get_int(lib->settings,"charon.radius_retran_time_usec", 500000);
++    if (radius_retransmit_count < 2 || radius_retransmit_count > 5)
++        radius_retransmit_count = 3;
++
+ 	/* timeout after 2, 3, 4, 5 seconds */
+-	for (i = 2; i <= 5; i++)
++	for (i = 1; i <= radius_retransmit_count; i++)
+ 	{
+ 		radius_message_t *response;
+ 		bool retransmit = FALSE;
+@@ -174,9 +183,10 @@
+ 			DBG1(DBG_CFG, "sending RADIUS message failed: %s", strerror(errno));
+ 			return NULL;
+ 		}
+-		tv.tv_sec = i;
+-		tv.tv_usec = 0;
+ 
++		tv.tv_sec = radius_retransmit_time_sec;
++		tv.tv_usec = radius_retransmit_time_usec;
++
+ 		while (TRUE)
+ 		{
+ 			FD_ZERO(&fds);
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libradius/radius_client.c
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libradius/radius_client.c	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/src/libradius/radius_client.c	(版本 2506)
+@@ -85,7 +85,7 @@
+     int vendorID;       //0x00,0x00,0x44,0x6E, //vendor ID
+     char vendorType;    //0x01,                //vendor type
+     char vendorLen;    //0x06,                //verdor length 
+-    char IP[4];
++    char IP[16];
+ }CombaIP_t;
+ #pragma pack()
+ //ljr end
+@@ -101,12 +101,26 @@
+     char apIP[] = {0x00,0x00,0x44,0x6E, //vendor ID
+                    0x01,                //vendor type
+                    0x06,                //verdor length
+-                   0x00,0x00,0x00,0x00  //AP IP
++                   0x00,0x00,0x00,0x00,
++                   0x00,0x00,0x00,0x00,
++                   0x00,0x00,0x00,0x00,
++                   0x00,0x00,0x00,0x00    //AP IP
+                   };
+     CombaIP_t* pIP = (CombaIP_t*)apIP;
+     //ljr end
+ 
+ 	chunk_t data;
++    int holdForPsk = 0;
++    int idleThreads = 0;
++
++    holdForPsk = lib->settings->get_int(lib->settings,"charon.holdforpsk", 20);
++    idleThreads = lib->processor->get_idle_threads(lib->processor);
++    if ((holdForPsk > 0) && (idleThreads < holdForPsk))
++    {   
++        DBG1(DBG_IKE, "eap-aka return NULL, because %d(idle) < %d(holdForPsk)", idleThreads, holdForPsk);
++        return NULL;
++    }
++    
+ 	/* we add the "Virtual" NAS-Port-Type, as we SHOULD include one */
+ 	req->add(req, RAT_NAS_PORT_TYPE, chunk_create(virtual, sizeof(virtual)));
+ 	/* add our NAS-Identifier */
+@@ -128,9 +142,18 @@
+         tmpIP = req->combaAP->get_address(req->combaAP);
+         if(4 == tmpIP.len)
+         {
++            pIP->vendorType = 0x01;     //0x01表示IPv4 IP
++            pIP->vendorLen = 0x06;
+             memcpy(pIP->IP, tmpIP.ptr, tmpIP.len);            
+             req->add(req, RAT_VENDOR_SPECIFIC, chunk_create(apIP,sizeof(apIP)));
+         }
++        else if(16 == tmpIP.len)
++        {
++            pIP->vendorType = 0x06;     //0x06表示IPv6 IP
++            pIP->vendorLen = 0x12;
++            memcpy(pIP->IP, tmpIP.ptr, tmpIP.len);
++            req->add(req, RAT_VENDOR_SPECIFIC, chunk_create(apIP,sizeof(apIP)));
++        }
+     }
+     DBG1(DBG_CFG, "**********************");
+     //ljr end
+Index: E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/packet_ipsec.sh
+===================================================================
+--- E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/packet_ipsec.sh	(版本 1271)
++++ E:/WCode/GWCode/IPBase/trunk/GW/strongswan/strongswan_4_6_4/packet_ipsec.sh	(版本 2506)
+@@ -26,6 +26,7 @@
+     echo 'Description:'
+     echo '      option'
+     echo '          -r: clean source code before make'
++    echo '          -n: not run configure before make'
+     echo '      platform: '
+     echo '          7220 2608 X86'
+     echo '      lib_openssl:'
+@@ -120,7 +121,7 @@
+     echo "configuring....." >> $LOG_FILE    
+     if [ "$PLATFORM_TYPE" != "X86" ]
+     then
+-        sleep 1;find ./ -name Makefile.in |xargs touch;sleep 2;touch configure;chmod +x configure;chmod +x configure;./configure --build=mips64octeon --host=mips64-octeon-linux-gnu --with-lib-prefix=${OCTEON_ROOT}/target --prefix="$BIN_PATH" ABI=64 CFLAGS="-mabi=64 -DOPENSSL_NO_LOCKING -DOCTEON_OPENSSL -DOCTEON_MODEL=OCTEON_CN58XX  -DOPENSSL_DISABLE_OLD_DES_SUPPORT -DOPENSSL_NO_MD4   -DOPENSSL_NO_EC -DOPENSSL_NO_ECDH -DOPENSSL_NO_ECDSA -DOPENSSL_NO_ENGINE -DStrongswan_APP -g -I$GW_PATH/DATA/src -I$GW_PATH/DATA/src/se  -I$GW_PATH/DATA/src/crypto -I$GW_PATH/DATA/src/ipsec -I$GW_PATH/DATA/src/mgr  -I$GW_PATH/GWDLL/include -I$GW_PATH/Interface/include" LDFLAGS="-L$GW_PATH/DATA/lib -mabi=64" LIBS=${LIB_NAME} --enable-eap-aka --enable-eap-radius --enable-nat-transport --enable-kernel-pfkey --enable-socket-default --enable-socket-raw --enable-socket-dynamic --disable-gmp --enable-openssl --enable-eap-identity --enable-updown --enable-dhcp --enable-farp --enable-ha --disable-leak-detective --enable-cavium-hardware-engine --disable-pluto --enable-load-tester --enable-unit-tester --enable-lookip --enable-lock-profiler >> $LOG_FILE
++        sleep 1;find ./ -name Makefile.in |xargs touch;sleep 2;touch configure;chmod +x configure;chmod +x configure;./configure --build=mips64octeon --host=mips64-octeon-linux-gnu --with-lib-prefix=${OCTEON_ROOT}/target --prefix="$BIN_PATH" ABI=64 CFLAGS="-mabi=64 -DOPENSSL_NO_LOCKING -DOCTEON_OPENSSL -DOCTEON_MODEL=OCTEON_CN58XX  -DOPENSSL_DISABLE_OLD_DES_SUPPORT -DOPENSSL_NO_MD4   -DOPENSSL_NO_EC -DOPENSSL_NO_ECDH -DOPENSSL_NO_ECDSA -DOPENSSL_NO_ENGINE -DStrongswan_APP -O2 -I$GW_PATH/DATA/src -I$GW_PATH/DATA/src/se  -I$GW_PATH/DATA/src/crypto -I$GW_PATH/DATA/src/ipsec -I$GW_PATH/DATA/src/mgr  -I$GW_PATH/GWDLL/include -I$GW_PATH/Interface/include" LDFLAGS="-L$GW_PATH/DATA/lib -mabi=64" LIBS=${LIB_NAME} --enable-eap-aka --enable-eap-radius --enable-nat-transport --enable-kernel-pfkey --enable-socket-default --enable-socket-raw --enable-socket-dynamic --disable-gmp --enable-openssl --enable-eap-identity --enable-updown --enable-dhcp --enable-farp --enable-ha --disable-leak-detective --enable-cavium-hardware-engine --disable-pluto --enable-load-tester --enable-unit-tester --enable-lookip --enable-lock-profiler >> $LOG_FILE
+     else        
+         sleep 1;find ./ -name Makefile.in |xargs touch;sleep 2;touch configure;chmod +x configure;./configure --prefix="$BIN_PATH" CFLAGS="-DStrongswan_APP -g -I$GW_PATH/DATA/src -I$GW_PATH/DATA/src/se  -I$GW_PATH/DATA/src/crypto -I$GW_PATH/DATA/src/ipsec -I$GW_PATH/DATA/src/mgr  -I$GW_PATH/GWDLL/include -I$GW_PATH/Interface/include" --disable-pluto --enable-eap-md5 --enable-eap-aka --enable-eap-radius   --enable-nat-transport --enable-eap-radius   --enable-kernel-pfkey --enable-socket-default --enable-socket-raw --enable-socket-dynamic  --enable-gmp --enable-openssl   --enable-eap-identity --enable-updown  --enable-dhcp --enable-farp --enable-leak-detective --enable-ha --disable-cavium-hardware-engine --enable-lookip --enable-load-tester  --enable-unit-tester >> $LOG_FILE
+     fi
